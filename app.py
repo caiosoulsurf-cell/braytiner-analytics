@@ -4,17 +4,18 @@ import numpy as np
 import yfinance as yf
 import requests
 import warnings
+import fundamentus
 
 warnings.filterwarnings('ignore')
 
 # ==============================================================================
-# CONFIGURAÇÃO DA PÁGINA (SIDEBAR SEMPRE ABERTA)
+# CONFIGURAÇÃO DA PÁGINA 
 # ==============================================================================
 st.set_page_config(
     page_title="Braytiner Analytics", 
     layout="wide", 
     page_icon="💎",
-    initial_sidebar_state="expanded" # GARANTE A BARRA ABERTA NO INÍCIO
+    initial_sidebar_state="expanded" 
 )
 
 st.markdown("""
@@ -98,7 +99,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# MOTOR DE BUSCA 5.8 (BRAPI PRO + AUTO-REMENDO YFINANCE)
+# MOTOR DE BUSCA 6.3 (BLINDAGEM CONTRA BLOQUEIO DE NUVEM)
 # ==============================================================================
 BRAPI_TOKEN = "6MeAw9XFNRGDZiqvnMcrXR"
 
@@ -107,9 +108,15 @@ def fetch_financial_data(ticker):
     dados = {'info': {}, 'historico': pd.DataFrame(), 'erro': None}
     ticker_upper = ticker.upper().strip()
     
+    # 1. DISFARCE DE NAVEGADOR PARA FURAR O BLOQUEIO DA NUVEM
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    })
+    
     stock = None
     try:
-        stock = yf.Ticker(ticker_upper + ".SA")
+        stock = yf.Ticker(ticker_upper + ".SA", session=session)
         info = stock.info
         
         price = info.get('currentPrice', info.get('previousClose', 0))
@@ -124,6 +131,28 @@ def fetch_financial_data(ticker):
     except Exception:
         pass
 
+    # PLANO B: SE O YAHOO BLOQUEAR A NUVEM, PUXA DO FUNDAMENTUS
+    if not dados.get('info') or dados.get('info', {}).get('price', 0) == 0:
+        try:
+            df_fund = fundamentus.get_papel(ticker_upper)
+            if not df_fund.empty:
+                # Tratamento seguro caso o Fundamentus devolva strings com vírgula ou %
+                p = str(df_fund.loc[ticker_upper, 'Cotacao']).replace('.','').replace(',','.')
+                l = str(df_fund.loc[ticker_upper, 'LPA']).replace('.','').replace(',','.')
+                v = str(df_fund.loc[ticker_upper, 'VPA']).replace('.','').replace(',','.')
+                dy_str = str(df_fund.loc[ticker_upper, 'Div_Yield']).replace('%','').replace('.','').replace(',','.')
+                
+                dados['info'] = {
+                    'price': float(p),
+                    'lpa': float(l),
+                    'vpa': float(v),
+                    'dividend_yield': float(dy_str) / 100 if float(dy_str) > 1 else float(dy_str),
+                    'longName': ticker_upper
+                }
+        except Exception:
+            pass
+
+    # 2. HISTÓRICO DE 10 ANOS (VIA BRAPI PRO)
     try:
         url = f"https://brapi.dev/api/quote/{ticker_upper}?modules=incomeStatementHistory,balanceSheetHistory&token={BRAPI_TOKEN}"
         response = requests.get(url, timeout=15)
@@ -180,7 +209,11 @@ def fetch_financial_data(ticker):
             if not ativos.dropna().empty and not passivos.dropna().empty:
                 patrimonio = ativos - passivos
                 
-        divida = get_col(df_hist, ['loansAndFinancing', 'shortLongTermDebtTotal', 'totalDebt', 'currentDebt'])
+        # AMPLIEI O MAPA DE DÍVIDAS BANCÁRIAS PARA A BRAPI PEGAR SOZINHA
+        divida = get_col(df_hist, [
+            'loansAndFinancing', 'shortLongTermDebtTotal', 'totalDebt', 'currentDebt', 
+            'longTermLoansAndFinancing', 'debentures', 'longTermDebentures'
+        ])
 
         if stock is not None:
             try:
@@ -242,9 +275,12 @@ def calculate_braytiner_score(series, is_inverted=False):
         return 0.0, pd.DataFrame()
 
     df = pd.DataFrame({'Valor': series.dropna()})
+    
+    # RESOLVE O ERRO DE "NONE" PREENCHENDO O PRIMEIRO ANO VAZIO COM ZERO
+    df['Variação'] = df['Valor'].pct_change().fillna(0)
+    
     df['Bin_Positivo'] = 0
     df['Bin_Crescimento'] = 0
-    df['Variação'] = df['Valor'].pct_change()
 
     if is_inverted:
         df['Bin_Positivo'] = 1 
@@ -279,7 +315,7 @@ def calculate_braytiner_score(series, is_inverted=False):
     return min(round(nota_final, 1), 10.0), df
 
 # ==============================================================================
-# FRONTEND 6.2 
+# FRONTEND 6.3 
 # ==============================================================================
 def style_negative_positive(val):
     if isinstance(val, (int, float)):
@@ -291,7 +327,7 @@ def style_negative_positive(val):
 
 def main():
     st.sidebar.markdown("## 💎 Braytiner Analytics")
-    st.sidebar.caption("v6.2 - Lançamento Oficial")
+    st.sidebar.caption("v6.3 - Anti-Bloqueio de Nuvem")
     st.sidebar.divider()
     
     ticker_input = st.sidebar.text_input("Código do Ativo (ex: ABEV3)", value="ITUB4").upper().strip()
