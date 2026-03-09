@@ -99,7 +99,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# MOTOR DE BUSCA 6.3 (BLINDAGEM CONTRA BLOQUEIO DE NUVEM)
+# MOTOR DE BUSCA 6.4 (BLINDAGEM NUVEM E FUNDAMENTUS CORRIGIDO)
 # ==============================================================================
 BRAPI_TOKEN = "6MeAw9XFNRGDZiqvnMcrXR"
 
@@ -108,7 +108,6 @@ def fetch_financial_data(ticker):
     dados = {'info': {}, 'historico': pd.DataFrame(), 'erro': None}
     ticker_upper = ticker.upper().strip()
     
-    # 1. DISFARCE DE NAVEGADOR PARA FURAR O BLOQUEIO DA NUVEM
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
@@ -131,28 +130,37 @@ def fetch_financial_data(ticker):
     except Exception:
         pass
 
-    # PLANO B: SE O YAHOO BLOQUEAR A NUVEM, PUXA DO FUNDAMENTUS
+    # PLANO B: FUNDAMENTUS COM CONVERSOR BLINDADO
     if not dados.get('info') or dados.get('info', {}).get('price', 0) == 0:
         try:
             df_fund = fundamentus.get_papel(ticker_upper)
             if not df_fund.empty:
-                # Tratamento seguro caso o Fundamentus devolva strings com vírgula ou %
-                p = str(df_fund.loc[ticker_upper, 'Cotacao']).replace('.','').replace(',','.')
-                l = str(df_fund.loc[ticker_upper, 'LPA']).replace('.','').replace(',','.')
-                v = str(df_fund.loc[ticker_upper, 'VPA']).replace('.','').replace(',','.')
-                dy_str = str(df_fund.loc[ticker_upper, 'Div_Yield']).replace('%','').replace('.','').replace(',','.')
                 
+                def safe_float(val):
+                    if isinstance(val, (int, float, np.number)):
+                        return float(val)
+                    val = str(val).replace('%', '').replace('.', '').replace(',', '.')
+                    return float(val) if val else 0.0
+
+                p = safe_float(df_fund.loc[ticker_upper, 'Cotacao'])
+                l = safe_float(df_fund.loc[ticker_upper, 'LPA'])
+                v = safe_float(df_fund.loc[ticker_upper, 'VPA'])
+                dy = safe_float(df_fund.loc[ticker_upper, 'Div_Yield'])
+                
+                # Previne que o yield seja 7.2 ao invés de 0.072
+                if dy > 1.0: 
+                    dy = dy / 100.0
+
                 dados['info'] = {
-                    'price': float(p),
-                    'lpa': float(l),
-                    'vpa': float(v),
-                    'dividend_yield': float(dy_str) / 100 if float(dy_str) > 1 else float(dy_str),
-                    'longName': ticker_upper
+                    'price': p,
+                    'lpa': l,
+                    'vpa': v,
+                    'dividend_yield': dy
                 }
         except Exception:
             pass
 
-    # 2. HISTÓRICO DE 10 ANOS (VIA BRAPI PRO)
+    # HISTÓRICO VIA BRAPI PRO
     try:
         url = f"https://brapi.dev/api/quote/{ticker_upper}?modules=incomeStatementHistory,balanceSheetHistory&token={BRAPI_TOKEN}"
         response = requests.get(url, timeout=15)
@@ -164,6 +172,7 @@ def fetch_financial_data(ticker):
         data = response.json()
         results = data.get('results', [{}])[0]
         
+        # Garante o nome correto
         if 'longName' in results and 'longName' not in dados.get('info', {}):
             if 'info' not in dados: dados['info'] = {}
             dados['info']['longName'] = results['longName']
@@ -209,7 +218,6 @@ def fetch_financial_data(ticker):
             if not ativos.dropna().empty and not passivos.dropna().empty:
                 patrimonio = ativos - passivos
                 
-        # AMPLIEI O MAPA DE DÍVIDAS BANCÁRIAS PARA A BRAPI PEGAR SOZINHA
         divida = get_col(df_hist, [
             'loansAndFinancing', 'shortLongTermDebtTotal', 'totalDebt', 'currentDebt', 
             'longTermLoansAndFinancing', 'debentures', 'longTermDebentures'
@@ -275,9 +283,7 @@ def calculate_braytiner_score(series, is_inverted=False):
         return 0.0, pd.DataFrame()
 
     df = pd.DataFrame({'Valor': series.dropna()})
-    
-    # RESOLVE O ERRO DE "NONE" PREENCHENDO O PRIMEIRO ANO VAZIO COM ZERO
-    df['Variação'] = df['Valor'].pct_change().fillna(0)
+    df['Variação'] = df['Valor'].pct_change().fillna(0) # CORRIGE O "NONE" NA MATEMÁTICA
     
     df['Bin_Positivo'] = 0
     df['Bin_Crescimento'] = 0
@@ -315,7 +321,7 @@ def calculate_braytiner_score(series, is_inverted=False):
     return min(round(nota_final, 1), 10.0), df
 
 # ==============================================================================
-# FRONTEND 6.3 
+# FRONTEND 6.4
 # ==============================================================================
 def style_negative_positive(val):
     if isinstance(val, (int, float)):
@@ -327,7 +333,7 @@ def style_negative_positive(val):
 
 def main():
     st.sidebar.markdown("## 💎 Braytiner Analytics")
-    st.sidebar.caption("v6.3 - Anti-Bloqueio de Nuvem")
+    st.sidebar.caption("v6.4 - Blindagem de Dados em Nuvem")
     st.sidebar.divider()
     
     ticker_input = st.sidebar.text_input("Código do Ativo (ex: ABEV3)", value="ITUB4").upper().strip()
@@ -365,8 +371,6 @@ def main():
             lpa = info.get('lpa', 0)
             vpa = info.get('vpa', 0)
             div_yield = info.get('dividend_yield', 0)
-
-            if div_yield and div_yield > 1.0: div_yield = div_yield / 100
 
             graham = (22.5 * lpa * vpa) ** 0.5 if (lpa > 0 and vpa > 0) else 0
             div_pago = price * div_yield if div_yield else 0
@@ -429,7 +433,8 @@ def main():
                     with st.expander(f"{indicador} | Nota: {nota}", expanded=True):
                         st.progress(nota / 10)
                         if not df_detalhe.empty:
-                            df_view = df_detalhe[['Valor', 'Variação']].copy().sort_index(ascending=False)
+                            # CORRIGE O VISUAL DO NONE NAS TABELAS
+                            df_view = df_detalhe[['Valor', 'Variação']].copy().sort_index(ascending=False).fillna(0)
                             
                             styled_df = df_view.style.format({
                                 'Valor': '{:,.2f}', 
